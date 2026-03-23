@@ -166,7 +166,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       if (t.actorName && t.runId) gateway.runActorRef.current.set(t.runId, t.actorName);
     }
 
-    // Auto-connect: immediately for Auggie (no config needed), or if config was saved for OpenClaw
+    // Auto-connect: immediately for Auggie (no config needed), or bootstrap local OpenClaw config
     if (getAgentProvider() === "auggie") {
       const t = setTimeout(
         () => gateway.connectImpl({ url: getDefaultGatewayUrl(), token: "" }),
@@ -174,10 +174,47 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       );
       return () => clearTimeout(t);
     }
-    if (savedConfig?.url) {
-      const t = setTimeout(() => gateway.connectImpl(savedConfig), 80);
-      return () => clearTimeout(t);
-    }
+
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      let nextConfig = savedConfig;
+      try {
+        const response = await fetch("/api/internal/gateway-config", { cache: "no-store" });
+        if (response.ok) {
+          const payload = (await response.json()) as {
+            ok?: boolean;
+            config?: {
+              url?: string;
+              token?: string;
+              provider?: "openclaw" | "auggie";
+              deviceToken?: string;
+              device?: { id: string; publicKeyPem: string; privateKeyPem: string };
+            };
+          };
+          if (payload.ok && payload.config?.url) {
+            nextConfig = {
+              url: payload.config.url,
+              token: payload.config.token ?? "",
+              provider: payload.config.provider ?? "openclaw",
+              deviceToken: payload.config.deviceToken,
+              device: payload.config.device,
+            };
+          }
+        }
+      } catch {
+        // fall back to saved localStorage config if bootstrap route isn't available
+      }
+
+      if (!cancelled && nextConfig?.url) {
+        gateway.configRef.current = nextConfig;
+        gateway.connectImpl(nextConfig);
+      }
+    }, 80);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -264,14 +301,12 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     gameEvents.emit("seat-configs-updated", state.seats);
 
     // Sync worker roster to server for auggie MCP dispatch
-    if (typeof window !== "undefined") {
+    if (typeof window !== "undefined" && getAgentProvider() === "auggie") {
       fetch("/api/internal/seat-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seats: configs }),
-      }).catch(() => {
-        /* ignore — endpoint only exists in auggie mode */
-      });
+      }).catch(() => {});
     }
   }, [state.seats]);
 

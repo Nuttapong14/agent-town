@@ -28,12 +28,20 @@ export interface BgmState {
 }
 
 export function useBgm(): BgmState {
-  const [volume, setVolume] = useState(() => clampVolume(loadBgmVolume()));
+  // Initialize with the server-safe default so SSR and client agree on first render.
+  // The persisted value is loaded after hydration in the effect below.
+  const [volume, setVolume] = useState(DEFAULT_BGM_VOLUME);
   const volumeRef = useRef(volume);
 
   useEffect(() => {
     volumeRef.current = volume;
   }, [volume]);
+
+  // Hydrate from localStorage after mount (avoids SSR/client mismatch)
+  useEffect(() => {
+    const saved = clampVolume(loadBgmVolume());
+    setVolume(saved);
+  }, []);
 
   useEffect(() => {
     const audio = getAudio();

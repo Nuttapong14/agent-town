@@ -13,8 +13,17 @@
  */
 
 import type { GatewayFrame } from "./gateway-types";
+import { createLogger } from "./logger";
+
+const log = createLogger("GatewayClient");
 
 type Listener = (payload: unknown) => void;
+
+type DeviceIdentity = {
+  id: string;
+  publicKeyPem: string;
+  privateKeyPem: string;
+};
 
 interface PendingRequest {
   resolve: (res: GatewayFrame) => void;
@@ -31,8 +40,6 @@ export type GatewayStatus =
   | "unreachable"
   | "rate_limited";
 
-// ── Reconnect config ───────────────────────────────────
-
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RECONNECT_FACTOR = 2;
@@ -45,6 +52,81 @@ function nextId(): string {
   return `aw_${++counter}_${Date.now()}`;
 }
 
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const base64 = pem
+    .replace(/-----BEGIN [^-]+-----/g, "")
+    .replace(/-----END [^-]+-----/g, "")
+    .replace(/\s+/g, "");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function normalizeDeviceAuthPart(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+async function signConnectNonce(params: {
+  device: DeviceIdentity;
+  nonce: string;
+  token?: string;
+  scopes: string[];
+  signedAtMs: number;
+  clientId: string;
+  clientMode: string;
+  role: string;
+  platform: string;
+  deviceFamily?: string;
+}) {
+  const payload = [
+    "v3",
+    params.device.id,
+    params.clientId,
+    params.clientMode,
+    params.role,
+    params.scopes.join(","),
+    String(params.signedAtMs),
+    params.token ?? "",
+    params.nonce,
+    normalizeDeviceAuthPart(params.platform),
+    normalizeDeviceAuthPart(params.deviceFamily),
+  ].join("|");
+
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToArrayBuffer(params.device.privateKeyPem),
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    { name: "Ed25519" },
+    privateKey,
+    new TextEncoder().encode(payload),
+  );
+
+  const publicKey = await crypto.subtle.importKey(
+    "spki",
+    pemToArrayBuffer(params.device.publicKeyPem),
+    { name: "Ed25519" },
+    true,
+    [],
+  );
+  const rawPublicKey = await crypto.subtle.exportKey("raw", publicKey);
+
+  return {
+    signature: bytesToBase64Url(new Uint8Array(signature)),
+    publicKey: bytesToBase64Url(new Uint8Array(rawPublicKey)),
+  };
+}
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -54,19 +136,25 @@ export class GatewayClient {
   private _grantedScopes: Set<string> = new Set();
   private url: string;
   private token: string;
+  private deviceToken?: string;
+  private device?: DeviceIdentity;
 
   private connectReject: ((err: Error) => void) | null = null;
   private connectSettled = false;
-
-  /** Reconnection state */
   private autoReconnect = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
 
-  constructor(url: string, token: string) {
+  constructor(
+    url: string,
+    token: string,
+    options?: { deviceToken?: string; device?: DeviceIdentity },
+  ) {
     this.url = url;
     this.token = token;
+    this.deviceToken = options?.deviceToken;
+    this.device = options?.device;
   }
 
   get status(): GatewayStatus {
@@ -96,6 +184,7 @@ export class GatewayClient {
   }
 
   connect(): Promise<GatewayFrame> {
+    log.info(`Connecting to ${this.url}`);
     this.autoReconnect = true;
     this.reconnectAttempt = 0;
     this.intentionalClose = false;
@@ -105,6 +194,7 @@ export class GatewayClient {
   private connectOnce(): Promise<GatewayFrame> {
     return new Promise((resolve, reject) => {
       if (this.ws) {
+        log.debug("Closing existing WS before reconnect");
         this.ws.close();
         this.ws = null;
       }
@@ -113,11 +203,12 @@ export class GatewayClient {
       this.connectSettled = false;
       this.connectReject = reject;
 
+      log.debug(`Opening WebSocket to ${this.url}`);
       const ws = new WebSocket(this.url);
       this.ws = ws;
 
       ws.onopen = () => {
-        // Wait for connect.challenge event from server
+        log.debug("WebSocket opened, waiting for connect.challenge");
       };
 
       ws.onmessage = (ev: MessageEvent) => {
@@ -125,6 +216,7 @@ export class GatewayClient {
         try {
           frame = JSON.parse(typeof ev.data === "string" ? ev.data : "{}");
         } catch {
+          log.warn("Received non-JSON frame, ignoring:", ev.data);
           return;
         }
         this.handleFrame(frame, (res) => {
@@ -132,13 +224,16 @@ export class GatewayClient {
             this.connectSettled = true;
             this.connectReject = null;
             this.reconnectAttempt = 0;
+            log.info(
+              `Handshake complete — connected. Granted scopes: ${[...this._grantedScopes].join(", ") || "(none)"}`,
+            );
             resolve(res);
           }
         });
       };
 
       ws.onerror = () => {
-        // Don't overwrite terminal states set by handshake failure
+        log.error(`WebSocket error (status=${this._status}, url=${this.url})`);
         if (
           this._status !== "auth_failed" &&
           this._status !== "unreachable" &&
@@ -149,9 +244,11 @@ export class GatewayClient {
         this.rejectConnect(new Error("WebSocket connection error"));
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         const wasConnected = this._status === "connected";
-        // Don't overwrite terminal states set by handshake failure
+        log.warn(
+          `WebSocket closed: code=${ev.code} reason="${ev.reason || "(none)"}" wasConnected=${wasConnected} intentional=${this.intentionalClose}`,
+        );
         if (
           this._status !== "auth_failed" &&
           this._status !== "unreachable" &&
@@ -171,13 +268,10 @@ export class GatewayClient {
 
   private scheduleReconnect(wasConnected: boolean) {
     if (this.reconnectTimer) return;
-
-    // If we were previously connected, reset attempt counter for faster retry
-    if (wasConnected) {
-      this.reconnectAttempt = 0;
-    }
+    if (wasConnected) this.reconnectAttempt = 0;
 
     if (this.reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) {
+      log.error(`Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached — giving up`);
       this.autoReconnect = false;
       this.setStatus("unreachable");
       return;
@@ -188,14 +282,14 @@ export class GatewayClient {
       RECONNECT_MAX_MS,
     );
     this.reconnectAttempt++;
+    log.info(
+      `Scheduling reconnect attempt ${this.reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS} in ${delay}ms`,
+    );
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.autoReconnect || this.intentionalClose) return;
-
-      this.connectOnce().catch(() => {
-        // Error handled by onclose -> scheduleReconnect
-      });
+      this.connectOnce().catch(() => {});
     }, delay);
   }
 
@@ -218,21 +312,17 @@ export class GatewayClient {
   private handleFrame(frame: GatewayFrame, onConnected?: (res: GatewayFrame) => void) {
     if (frame.type === "event") {
       if (frame.event === "connect.challenge") {
-        this.sendConnectHandshake();
+        const nonce = typeof frame.payload?.nonce === "string" ? frame.payload.nonce : "";
+        void this.sendConnectHandshake(nonce);
         return;
       }
 
       if (frame.event) {
         const listeners = this.eventListeners.get(frame.event);
-        if (listeners) {
-          listeners.forEach((fn) => fn(frame.payload));
-        }
+        if (listeners) listeners.forEach((fn) => fn(frame.payload));
       }
-      // Fire wildcard listeners
       const wildcard = this.eventListeners.get("*");
-      if (wildcard) {
-        wildcard.forEach((fn) => fn(frame));
-      }
+      if (wildcard) wildcard.forEach((fn) => fn(frame));
       return;
     }
 
@@ -250,6 +340,9 @@ export class GatewayClient {
           }
           pending.resolve(frame);
         } else {
+          log.warn(
+            `[Gateway] Response REJECTED for id=${frame.id}: ${frame.error?.message ?? "Request failed"} | full error payload: ${JSON.stringify(frame.error ?? {})}`,
+          );
           pending.reject(new Error(frame.error?.message ?? "Request failed"));
         }
         return;
@@ -262,28 +355,68 @@ export class GatewayClient {
         return;
       }
 
-      // Gateway sends a second res frame for long-running requests
-      // (first = "accepted", second = final "ok"/"error"). Route it
-      // as an internal event so the store can update task status.
       const listeners = this.eventListeners.get("__final_res__");
-      if (listeners) {
-        listeners.forEach((fn) => fn(frame));
-      }
+      if (listeners) listeners.forEach((fn) => fn(frame));
     }
   }
 
   private storeGrantedScopes(frame: GatewayFrame) {
     this._grantedScopes.clear();
-    const scopes = frame.payload?.scopes;
-    if (Array.isArray(scopes)) {
-      for (const s of scopes) {
-        if (typeof s === "string") this._grantedScopes.add(s);
-      }
+    const payload = (frame.payload ?? {}) as { scopes?: unknown; auth?: { scopes?: unknown } };
+    const scopes = Array.isArray(payload.scopes)
+      ? payload.scopes
+      : Array.isArray(payload.auth?.scopes)
+        ? payload.auth?.scopes
+        : [];
+    for (const s of scopes) {
+      if (typeof s === "string") this._grantedScopes.add(s);
     }
+    log.info(`Granted scopes: [${[...this._grantedScopes].join(", ") || "(none)"}]`);
   }
 
-  private sendConnectHandshake() {
+  private async sendConnectHandshake(nonce: string) {
+    log.debug("Sending connect handshake");
     const id = nextId();
+    const scopes = ["operator.read", "operator.write", "operator.admin"];
+    const auth: Record<string, string> = { token: this.token };
+    if (this.deviceToken) auth.deviceToken = this.deviceToken;
+
+    let devicePayload:
+      | {
+          id: string;
+          publicKey: string;
+          signature: string;
+          signedAt: number;
+          nonce: string;
+        }
+      | undefined;
+
+    if (nonce && this.device) {
+      try {
+        const signedAtMs = Date.now();
+        const signed = await signConnectNonce({
+          device: this.device,
+          nonce,
+          token: this.token,
+          scopes,
+          signedAtMs,
+          clientId: "gateway-client",
+          clientMode: "backend",
+          role: "operator",
+          platform: "web",
+        });
+        devicePayload = {
+          id: this.device.id,
+          publicKey: signed.publicKey,
+          signature: signed.signature,
+          signedAt: signedAtMs,
+          nonce,
+        };
+      } catch (error) {
+        log.error(`Device signing failed: ${(error as Error).message}`);
+      }
+    }
+
     const frame: GatewayFrame = {
       type: "req",
       id,
@@ -299,10 +432,12 @@ export class GatewayClient {
           mode: "backend",
           instanceId: `aw-${Date.now()}`,
         },
-        auth: { token: this.token },
+        auth,
         role: "operator",
-        scopes: ["operator.read", "operator.write", "operator.admin"],
+        scopes,
         locale: "en-US",
+        userAgent: "agent-town/1.0.0",
+        ...(devicePayload ? { device: devicePayload } : {}),
       },
     };
 
@@ -315,10 +450,11 @@ export class GatewayClient {
     this.pending.set(id, {
       resolve: () => {},
       reject: (err) => {
-        // Server explicitly rejected the handshake — stop retrying immediately.
-        this.autoReconnect = false;
         const isRateLimited = /rate.limit|too many/i.test(err.message);
-        this.setStatus(isRateLimited ? "rate_limited" : "auth_failed");
+        const newStatus = isRateLimited ? "rate_limited" : "auth_failed";
+        log.error(`Handshake rejected: ${err.message} → status=${newStatus}`);
+        this.autoReconnect = false;
+        this.setStatus(newStatus);
         this.rejectConnect(err);
       },
       timer,
@@ -333,21 +469,24 @@ export class GatewayClient {
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<GatewayFrame> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      log.error(`request("${method}") called but WS not open (status=${this._status})`);
       throw new Error("Not connected");
     }
 
     const id = nextId();
+    log.debug(`request: method=${method} id=${id}`);
+    const ws = this.ws;
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        log.warn(`Request timed out: method=${method} id=${id} timeout=${timeoutMs}ms`);
         reject(new Error(`Timeout: ${method}`));
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timer });
-
       const frame: GatewayFrame = { type: "req", id, method, params };
-      this.ws!.send(JSON.stringify(frame));
+      ws.send(JSON.stringify(frame));
     });
   }
 
@@ -356,6 +495,7 @@ export class GatewayClient {
   }
 
   disconnect() {
+    log.info("Disconnecting (intentional)");
     this.intentionalClose = true;
     this.autoReconnect = false;
 

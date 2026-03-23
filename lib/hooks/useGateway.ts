@@ -39,14 +39,21 @@ export function useGateway(refs: GatewayRefs) {
 
   const connectImpl = useCallback(
     (cfg: GatewayConfig) => {
+      log.info(
+        `connectImpl: url=${cfg.url} token=${cfg.token ? `${cfg.token.slice(0, 6)}…` : "(empty)"}`,
+      );
       if (clientRef.current) {
+        log.debug("connectImpl: disconnecting existing client");
         clientRef.current.disconnect();
       }
 
       configRef.current = cfg;
       modelCatalogRef.current = null;
 
-      const client = new GatewayClient(cfg.url, cfg.token);
+      const client = new GatewayClient(cfg.url, cfg.token, {
+        deviceToken: cfg.deviceToken,
+        device: cfg.device,
+      });
       clientRef.current = client;
 
       wireGatewayClient(client, {
@@ -68,10 +75,11 @@ export function useGateway(refs: GatewayRefs) {
       client
         .connect()
         .then(() => {
+          log.info(`Connected successfully to ${cfg.url}`);
           saveGatewayConfig(cfg);
         })
         .catch((err) => {
-          log.warn("connect failed:", err.message);
+          log.warn(`connect failed: ${err.message} (status=${client.status})`);
           const terminalStates = new Set(["auth_failed", "unreachable", "rate_limited"]);
           if (!terminalStates.has(client.status)) {
             refs.dispatch.current({ type: "SET_CONNECTION", status: "error" });
