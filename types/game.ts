@@ -105,6 +105,11 @@ export interface GatewayConfig {
   url: string;
   token: string;
   provider?: AgentProvider;
+  deviceToken?: string;
+  device?: {
+    id: string;
+    publicKeyPem: string;
+  };
 }
 
 export interface SessionMetrics {
