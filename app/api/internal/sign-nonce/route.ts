@@ -68,8 +68,15 @@ export async function POST(req: NextRequest) {
     deviceIdentity = JSON.parse(
       await fs.readFile(deviceIdentityPath, "utf8"),
     ) as DeviceIdentityShape;
-  } catch {
-    return NextResponse.json({ ok: false, error: "Device identity not found" }, { status: 404 });
+  } catch (error) {
+    if ((error as { code?: string })?.code === "ENOENT") {
+      return NextResponse.json({ ok: false, error: "Device identity not found" }, { status: 404 });
+    }
+    console.error("[sign-nonce] Failed to read or parse device identity:", error);
+    return NextResponse.json(
+      { ok: false, error: "Malformed device identity file" },
+      { status: 500 },
+    );
   }
 
   if (!deviceIdentity?.deviceId || !deviceIdentity.privateKeyPem || !deviceIdentity.publicKeyPem) {

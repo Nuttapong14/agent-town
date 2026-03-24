@@ -29,7 +29,10 @@ type DeviceIdentityShape = {
 async function readJson<T>(filePath: string): Promise<T | null> {
   try {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
-  } catch {
+  } catch (error) {
+    if ((error as { code?: string })?.code !== "ENOENT") {
+      console.error(`[gateway-config] Failed to read or parse ${filePath}:`, error);
+    }
     return null;
   }
 }

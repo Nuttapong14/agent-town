@@ -188,7 +188,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
               token?: string;
               provider?: "openclaw" | "auggie";
               deviceToken?: string;
-              device?: { id: string; publicKeyPem: string; privateKeyPem: string };
+              device?: { id: string; publicKeyPem: string };
             };
           };
           if (payload.ok && payload.config?.url) {
@@ -306,7 +306,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seats: configs }),
-      }).catch(() => {});
+      }).catch((err) => console.warn("[seat-sync] Fetch failed:", err));
     }
   }, [state.seats]);
 

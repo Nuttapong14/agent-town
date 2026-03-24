@@ -236,7 +236,9 @@ export class GatewayClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.autoReconnect || this.intentionalClose) return;
-      this.connectOnce().catch(() => {});
+      this.connectOnce().catch(() =>
+        log.debug("Reconnect attempt failed, will retry via onclose handler."),
+      );
     }, delay);
   }
 
