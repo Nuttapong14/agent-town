@@ -109,7 +109,6 @@ export interface GatewayConfig {
   device?: {
     id: string;
     publicKeyPem: string;
-    privateKeyPem: string;
   };
 }
 

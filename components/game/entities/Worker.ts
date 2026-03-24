@@ -215,7 +215,7 @@ export class Worker implements WorkerCtx {
     if (!this.emoteSprite) return;
     this.emoteSprite.removeAllListeners("animationcomplete");
     this.emoteSprite.setVisible(false);
-    this.emoteSprite.stop();
+    if (this.emoteSprite.anims) this.emoteSprite.stop();
     this.currentEmoteKey = null;
   }
 

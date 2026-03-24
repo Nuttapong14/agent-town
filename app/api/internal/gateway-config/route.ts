@@ -66,11 +66,10 @@ export async function GET() {
       token: sharedToken ?? "",
       deviceToken: operatorToken ?? "",
       device:
-        deviceIdentity?.deviceId && deviceIdentity.publicKeyPem && deviceIdentity.privateKeyPem
+        deviceIdentity?.deviceId && deviceIdentity.publicKeyPem
           ? {
               id: deviceIdentity.deviceId,
               publicKeyPem: deviceIdentity.publicKeyPem,
-              privateKeyPem: deviceIdentity.privateKeyPem,
             }
           : undefined,
     },

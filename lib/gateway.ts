@@ -22,7 +22,6 @@ type Listener = (payload: unknown) => void;
 type DeviceIdentity = {
   id: string;
   publicKeyPem: string;
-  privateKeyPem: string;
 };
 
 interface PendingRequest {
@@ -52,29 +51,7 @@ function nextId(): string {
   return `aw_${++counter}_${Date.now()}`;
 }
 
-function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const base64 = pem
-    .replace(/-----BEGIN [^-]+-----/g, "")
-    .replace(/-----END [^-]+-----/g, "")
-    .replace(/\s+/g, "");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
-}
-
-function bytesToBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function normalizeDeviceAuthPart(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
 async function signConnectNonce(params: {
-  device: DeviceIdentity;
   nonce: string;
   token?: string;
   scopes: string[];
@@ -84,47 +61,17 @@ async function signConnectNonce(params: {
   role: string;
   platform: string;
   deviceFamily?: string;
-}) {
-  const payload = [
-    "v3",
-    params.device.id,
-    params.clientId,
-    params.clientMode,
-    params.role,
-    params.scopes.join(","),
-    String(params.signedAtMs),
-    params.token ?? "",
-    params.nonce,
-    normalizeDeviceAuthPart(params.platform),
-    normalizeDeviceAuthPart(params.deviceFamily),
-  ].join("|");
-
-  const privateKey = await crypto.subtle.importKey(
-    "pkcs8",
-    pemToArrayBuffer(params.device.privateKeyPem),
-    { name: "Ed25519" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    { name: "Ed25519" },
-    privateKey,
-    new TextEncoder().encode(payload),
-  );
-
-  const publicKey = await crypto.subtle.importKey(
-    "spki",
-    pemToArrayBuffer(params.device.publicKeyPem),
-    { name: "Ed25519" },
-    true,
-    [],
-  );
-  const rawPublicKey = await crypto.subtle.exportKey("raw", publicKey);
-
-  return {
-    signature: bytesToBase64Url(new Uint8Array(signature)),
-    publicKey: bytesToBase64Url(new Uint8Array(rawPublicKey)),
-  };
+}): Promise<{ signature: string; publicKey: string; deviceId: string }> {
+  const res = await fetch("/api/internal/sign-nonce", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error ?? `sign-nonce failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ signature: string; publicKey: string; deviceId: string }>;
 }
 
 export class GatewayClient {
@@ -395,7 +342,6 @@ export class GatewayClient {
       try {
         const signedAtMs = Date.now();
         const signed = await signConnectNonce({
-          device: this.device,
           nonce,
           token: this.token,
           scopes,
@@ -406,7 +352,7 @@ export class GatewayClient {
           platform: "web",
         });
         devicePayload = {
-          id: this.device.id,
+          id: signed.deviceId,
           publicKey: signed.publicKey,
           signature: signed.signature,
           signedAt: signedAtMs,
