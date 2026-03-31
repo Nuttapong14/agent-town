@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 type OpenClawConfigShape = {
   gateway?: {
@@ -37,12 +37,16 @@ async function readJson<T>(filePath: string): Promise<T | null> {
   }
 }
 
-function normalizeGatewayUrl(bind: string | undefined, port: number | undefined) {
-  const host = !bind || bind === "loopback" || bind === "127.0.0.1" ? "127.0.0.1" : bind;
-  return `ws://${host}:${port ?? 18789}/`;
+function proxyGatewayUrl(req: NextRequest): string {
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  const host = forwardedHost ?? req.headers.get("host") ?? "localhost:3000";
+  const proto = forwardedProto?.split(",")[0].trim() ?? "http";
+  const wsProto = proto === "https" ? "wss" : "ws";
+  return `${wsProto}://${host}/api/gateway`;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const home = process.env.HOME;
   if (!home) {
     return NextResponse.json({ ok: false, error: "HOME is not set" }, { status: 500 });
@@ -65,7 +69,7 @@ export async function GET() {
     ok: true,
     config: {
       provider: "openclaw",
-      url: normalizeGatewayUrl(openClawConfig?.gateway?.bind, openClawConfig?.gateway?.port),
+      url: proxyGatewayUrl(req),
       token: sharedToken ?? "",
       deviceToken: operatorToken ?? "",
       device:
