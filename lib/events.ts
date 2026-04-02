@@ -23,6 +23,38 @@ export interface GameEventMap {
   "terminal-closed": [];
   "new-session-for-seat": [seatId: string];
   "open-session-history": [seatId: string];
+
+  // Observability events
+  "agent:log": [agentId: string, level: "info" | "warn" | "error", msg: string, ts: number];
+  "agent:health": [agentId: string, status: "alive" | "stalled" | "blocked", ts: number];
+  "session:open": [agentId: string, sessionId: string, ts: number];
+  "session:close": [agentId: string, sessionId: string, ts: number];
+  "work:queued": [taskId: string, agentId: string, ts: number];
+  "work:active": [taskId: string, agentId: string, ts: number];
+
+  // Usage events
+  "usage:tokens": [
+    agentId: string,
+    model: string,
+    promptTokens: number,
+    completionTokens: number,
+    costUsd: number,
+    ts: number,
+  ];
+  "usage:context": [
+    agentId: string,
+    contextUsed: number,
+    contextMax: number,
+    pressurePct: number,
+    ts: number,
+  ];
+  "usage:budget": [
+    agentId: string,
+    spentUsd: number,
+    budgetUsd: number,
+    riskLevel: "low" | "medium" | "high",
+    ts: number,
+  ];
 }
 
 type Listener<T extends unknown[]> = (...args: T) => void;

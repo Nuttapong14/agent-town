@@ -2,6 +2,7 @@
 
 import "./hud.css";
 
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStudio } from "@/lib/store";
 import { isVisibleChatMessage } from "@/lib/constants";
@@ -9,6 +10,7 @@ import { MAIN_SESSION_KEY } from "@/lib/reducer";
 import { useBgm } from "@/lib/useBgm";
 import { loadOnboardingDone, loadGatewayConfig, saveOnboardingDone } from "@/lib/persistence";
 import type { HudDockItem, HudPanelId } from "./HudDock";
+import type { Agent } from "@/types/game";
 import TopBar from "./TopBar";
 import BottomBar from "./BottomBar";
 import ConnectionPanel from "./ConnectionPanel";
@@ -18,6 +20,11 @@ import WorkerPanel from "./WorkerPanel";
 import SeatManagerModal from "./SeatManagerModal";
 import MusicControls from "./MusicControls";
 import OnboardingOverlay from "./OnboardingOverlay";
+import KanbanBoard from "./KanbanBoard";
+import FleetPanel from "./FleetPanel";
+import ActivityFeed from "./ActivityFeed";
+import GovernancePanel from "./GovernancePanel";
+import UsagePanel from "./UsagePanel";
 
 export default function GameHud() {
   const { state } = useStudio();
@@ -27,6 +34,18 @@ export default function GameHud() {
   const [showOnboarding, setShowOnboarding] = useState(
     () => !loadOnboardingDone() && !loadGatewayConfig(),
   );
+  const [fleetAgents, setFleetAgents] = useState<Agent[]>([]);
+  useEffect(() => {
+    const load = () => {
+      fetch("/api/agents")
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.statusText)))
+        .then((data: Agent[]) => setFleetAgents(data))
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 10_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Auto-dismiss onboarding when connection panel opens
   useEffect(() => {
@@ -91,6 +110,36 @@ export default function GameHud() {
         icon: "/ui/icons/icon-workers.png",
         iconActive: "/ui/icons/icon-workers-active.png",
       },
+      {
+        id: "fleet" as const,
+        label: "Fleet",
+        icon: "/ui/icons/icon-workers.png",
+        iconActive: "/ui/icons/icon-workers-active.png",
+      },
+      {
+        id: "kanban" as const,
+        label: "Kanban",
+        icon: "/ui/icons/icon-tasks.png",
+        iconActive: "/ui/icons/icon-tasks-active.png",
+      },
+      {
+        id: "activity" as const,
+        label: "Activity",
+        icon: "/ui/icons/icon-connection.png",
+        iconActive: "/ui/icons/icon-connection-active.png",
+      },
+      {
+        id: "governance" as const,
+        label: "Governance",
+        icon: "/ui/icons/icon-tasks.png",
+        iconActive: "/ui/icons/icon-tasks-active.png",
+      },
+      {
+        id: "usage" as const,
+        label: "Usage",
+        icon: "/ui/icons/icon-music.png",
+        iconActive: "/ui/icons/icon-music-active.png",
+      },
     ],
     [],
   );
@@ -130,6 +179,13 @@ export default function GameHud() {
           {openPanel === "workers" ? (
             <WorkerPanel seats={state.seats} onOpenManager={() => setSeatManagerOpen(true)} />
           ) : null}
+          {openPanel === "fleet" ? <FleetPanel agents={fleetAgents} /> : null}
+          {openPanel === "kanban" ? <KanbanBoard tasks={visibleTasks} /> : null}
+          {openPanel === "activity" ? <ActivityFeed /> : null}
+          {openPanel === "governance" ? (
+            <GovernancePanel onClose={() => setOpenPanel(null)} />
+          ) : null}
+          {openPanel === "usage" ? <UsagePanel /> : null}
         </div>
       )}
 
@@ -163,7 +219,7 @@ export default function GameHud() {
             onClick={() => togglePanel("chat")}
             title="Chat"
           >
-            <img
+            <Image
               src={
                 openPanel === "chat" ? "/ui/icons/icon-chat-active.png" : "/ui/icons/icon-chat.png"
               }

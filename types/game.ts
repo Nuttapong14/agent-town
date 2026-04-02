@@ -101,6 +101,21 @@ export type ChatMessage = TextChatMessage | ToolChatMessage;
 
 export type AgentProvider = "openclaw" | "auggie";
 
+// --- Fleet management types ---
+export type AgentStatus = "idle" | "working" | "thinking" | "blocked" | "offline" | "retiring";
+
+export interface Agent {
+  id: string;
+  name: string;
+  role: string;
+  capabilities: string[];
+  status: AgentStatus;
+  heartbeatAt: number;
+  gatewayId: string;
+  position: { x: number; y: number };
+  emote?: string;
+}
+
 export interface GatewayConfig {
   url: string;
   token: string;
@@ -137,4 +152,23 @@ export interface StudioSnapshot {
   activeSessionKey?: string;
   sessionMetrics: SessionMetrics;
   sessions: SessionRecord[];
+}
+
+export interface AuditEntry {
+  id: string;
+  ts: number;
+  actor: string; // agentId or 'user'
+  action: string; // e.g. 'task:submitted', 'agent:retired', 'session:force-closed'
+  target?: string; // taskId / agentId / sessionId
+  detail?: string;
+  riskLevel?: "low" | "medium" | "high";
+}
+
+export interface ApprovalRequest {
+  id: string;
+  ts: number;
+  agentId: string;
+  action: string;
+  detail: string;
+  status: "pending" | "approved" | "rejected";
 }

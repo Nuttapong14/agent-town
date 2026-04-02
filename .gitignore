@@ -10,6 +10,9 @@
 !.yarn/releases
 !.yarn/versions
 
+# oh my claude
+.omc/
+
 # testing
 /coverage
 
